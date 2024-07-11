@@ -8,15 +8,15 @@ import com.zenith.event.proxy.StartQueueEvent;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.github.rfresh2.EventConsumer.of;
-import static com.zenith.Shared.CONFIG;
-import static com.zenith.Shared.EVENT_BUS;
+import static com.zenith.Shared.*;
 import static java.util.Objects.nonNull;
 
 public class QueueWaitDatabase extends Database {
 
-    private volatile Integer lastQueuePos = null;
+    private AtomicInteger lastQueuePos = new AtomicInteger(-1);
     private volatile Instant lastQueuePosTime = null;
     private Instant lastServerRestart = Instant.EPOCH;
 
@@ -39,29 +39,44 @@ public class QueueWaitDatabase extends Database {
     }
 
     public void handleStartQueue(final StartQueueEvent event) {
-        lastQueuePos = null;
+        lastQueuePos.set(-1);
         lastQueuePosTime = null;
     }
 
     public void handleQueuePosition(final QueuePositionUpdateEvent event) {
         var time = Instant.now();
         var newQueuePos = event.position();
-        if (lastQueuePos == null) {
-            lastQueuePos = newQueuePos;
-            lastQueuePosTime = time;
-            return;
+        var oldQueuePos = lastQueuePos.get();
+
+        if (oldQueuePos == -1) {
+            if (lastQueuePos.compareAndSet(oldQueuePos, newQueuePos)) {
+                lastQueuePosTime = time;
+                return;
+            }
+            oldQueuePos = lastQueuePos.get();
         }
 
-        if (newQueuePos > lastQueuePos) { // shouldn't happen, but better safe than sorry
-            return;
+        while (true) {
+            if (newQueuePos == oldQueuePos) { // shouldn't happen, but better safe than sorry
+                DATABASE_LOG.warn("Got duplicate queue pos update {}?", newQueuePos);
+                return;
+            }
+
+            if (newQueuePos > oldQueuePos) { // shouldn't happen, but better safe than sorry
+                DATABASE_LOG.warn("Got out of order queue pos update {}?", newQueuePos);
+                return;
+            }
+
+            if (lastQueuePos.compareAndSet(oldQueuePos, newQueuePos)) {
+                writeQueueWait(oldQueuePos++, lastQueuePosTime, time, lastServerRestart);
+                lastQueuePosTime = time;
+                while (oldQueuePos != newQueuePos) { // We skipped a queue position
+                    writeQueueWait(oldQueuePos++, time, time, lastServerRestart);
+                }
+                return;
+            }
+            oldQueuePos = lastQueuePos.get();
         }
-
-        while (lastQueuePos != newQueuePos + 1) {} // again, shouldn't happen, but on the off chance these arrive out of order?
-
-        writeQueueWait(lastQueuePos, lastQueuePosTime, time, lastServerRestart);
-
-        lastQueuePos = newQueuePos;
-        lastQueuePosTime = time;
     }
 
     public void handleQueueComplete(final QueueCompleteEvent event) {
