@@ -68,10 +68,10 @@ public class QueueWaitDatabase extends Database {
             }
 
             if (lastQueuePos.compareAndSet(oldQueuePos, newQueuePos)) {
-                writeQueueWait(oldQueuePos++, lastQueuePosTime, time, lastServerRestart);
+                writeQueueWait(oldQueuePos--, lastQueuePosTime, time, lastServerRestart);
                 lastQueuePosTime = time;
                 while (oldQueuePos != newQueuePos) { // We skipped a queue position
-                    writeQueueWait(oldQueuePos++, time, time, lastServerRestart);
+                    writeQueueWait(oldQueuePos--, time, time, lastServerRestart);
                 }
                 return;
             }
