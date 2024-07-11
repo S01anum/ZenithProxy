@@ -79,25 +79,31 @@ public class RestAutoUpdater extends AutoUpdater {
     }
 
     private boolean versionLooksCorrect(final String version) {
-        return version != null && version.matches("[0-9]+\\.[0-9]+\\.[0-9]+\\+.*") && version.endsWith("+" + LAUNCH_CONFIG.release_channel);
+        return version != null && version.matches("[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?\\+.*") && version.endsWith("+" + LAUNCH_CONFIG.release_channel);
     }
 
     private boolean versionIsLessThanCurrent(final String current, final String newVersion) {
-        String[] currentSplit = current.split("\\.");
-        String[] newSplit = newVersion.split("\\.");
+        String[] currentSplit = current.split("\\+")[0].split("\\.");
+        String[] newSplit = newVersion.split("\\+")[0].split("\\.");
         // replace any non-numeric characters with empty string
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             try {
-                currentSplit[i] = currentSplit[i].replaceAll("[^\\d]", "");
-                if (currentSplit[i].isEmpty()) {
-                    currentSplit[i] = "0";
+                int currentInt = 0;
+                if (i < currentSplit.length) {
+                    currentSplit[i] = currentSplit[i].replaceAll("[^\\d]", "");
+                    if (!currentSplit[i].isEmpty()) {
+                        currentInt = Integer.parseInt(currentSplit[i]);
+                    }
                 }
-                int currentInt = Integer.parseInt(currentSplit[i]);
-                newSplit[i] = newSplit[i].replaceAll("[^\\d]", "");
-                if (newSplit[i].isEmpty()) {
-                    newSplit[i] = "0";
+
+                int newInt = 0;
+                if (i < newSplit.length) {
+                    newSplit[i] = newSplit[i].replaceAll("[^\\d]", "");
+                    if (!newSplit[i].isEmpty()) {
+                        newInt = Integer.parseInt(newSplit[i]);
+                    }
                 }
-                int newInt = Integer.parseInt(newSplit[i]);
+
                 if (currentInt > newInt) {
                     return false;
                 } else if (newInt > currentInt) {
