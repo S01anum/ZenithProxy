@@ -17,6 +17,8 @@ import static com.zenith.Shared.EVENT_BUS;
 public class SetActionBarTextHandler implements ClientEventLoopPacketHandler<ClientboundSetActionBarTextPacket, ClientSession> {
     private Instant lastRestartEvent = Instant.EPOCH;
 
+    // TODO: Parse server restart countdown in chat
+
     @Override
     public boolean applyAsync(final ClientboundSetActionBarTextPacket packet, final ClientSession session) {
         if (Proxy.getInstance().isOn2b2t()) parse2bRestart(packet, session);

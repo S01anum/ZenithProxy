@@ -8,7 +8,6 @@ import com.zenith.event.proxy.StartQueueEvent;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.github.rfresh2.EventConsumer.of;
 import static com.zenith.Shared.CONFIG;
@@ -17,11 +16,8 @@ import static java.util.Objects.nonNull;
 
 public class QueueWaitDatabase extends Database {
 
-    private static final Duration MIN_RESTART_COOLDOWN = Duration.ofHours(6);
-    private static final Duration MIN_QUEUE_DURATION = Duration.ofMinutes(3);
-    private final AtomicBoolean shouldUpdateQueueLen = new AtomicBoolean(false);
-    private Integer initialQueueLen = null;
-    private Instant initialQueueTime = null;
+    private volatile Integer lastQueuePos = null;
+    private volatile Instant lastQueuePosTime = null;
     private Instant lastServerRestart = Instant.EPOCH;
 
     public QueueWaitDatabase(QueryExecutor queryExecutor) {
@@ -43,49 +39,44 @@ public class QueueWaitDatabase extends Database {
     }
 
     public void handleStartQueue(final StartQueueEvent event) {
-        shouldUpdateQueueLen.set(true);
-        initialQueueLen = null;
-        initialQueueTime = null;
+        lastQueuePos = null;
+        lastQueuePosTime = null;
     }
 
     public void handleQueuePosition(final QueuePositionUpdateEvent event) {
-        // record only first position update
-        if (shouldUpdateQueueLen.compareAndSet(true, false)) {
-            initialQueueLen = event.position();
-            initialQueueTime = Instant.now();
-        }
-    }
-
-    public void handleQueueComplete(final QueueCompleteEvent event) {
-        final Instant queueCompleteTime = Instant.now();
-
-        // filter out queue waits that happened directly after a server restart
-        // these aren't very representative of normal queue waits
-        // there might be a better way to filter these out
-        // todo: problem: we often update the proxy right after a restart and won't have an accurate lastServerRestart value
-        if (!queueCompleteTime.minus(MIN_RESTART_COOLDOWN).isAfter(lastServerRestart)) {
+        var time = Instant.now();
+        var newQueuePos = event.position();
+        if (lastQueuePos == null) {
+            lastQueuePos = newQueuePos;
+            lastQueuePosTime = time;
             return;
         }
 
-        // don't think there's much value in storing queue skips or immediate prio queues
-        // will just need to filter them out in queries after
-        // if there is a use case, just remove the condition
-        if (nonNull(initialQueueTime) && nonNull(initialQueueLen)) {
-            if (queueCompleteTime.minus(MIN_QUEUE_DURATION).isAfter(initialQueueTime)) {
-                writeQueueWait(initialQueueLen, initialQueueTime, queueCompleteTime);
-            }
+        if (newQueuePos > lastQueuePos) { // shouldn't happen, but better safe than sorry
+            return;
         }
-        // todo: filter obvious undetected restart queues based on initial queue len and actual queue time
+
+        while (lastQueuePos != newQueuePos + 1) {} // again, shouldn't happen, but on the off chance these arrive out of order?
+
+        writeQueueWait(lastQueuePos, lastQueuePosTime, time, lastServerRestart);
+
+        lastQueuePos = newQueuePos;
+        lastQueuePosTime = time;
     }
 
-    private void writeQueueWait(int initialQueueLen, Instant initialQueueTime, Instant endQueueTime) {
+    public void handleQueueComplete(final QueueCompleteEvent event) {
+        handleQueuePosition(new QueuePositionUpdateEvent(0));
+    }
+
+    private void writeQueueWait(int queuePos, Instant queuePosStartTime, Instant queuePosEndTime, Instant lastServerRestart) {
         try (var handle = this.queryExecutor.jdbi().open()) {
-            handle.createUpdate("INSERT INTO queuewait (player_name, prio, initial_queue_len, start_queue_time, end_queue_time) VALUES (:player_name, :prio, :initial_queue_len, :start_queue_time, :end_queue_time)")
+            handle.createUpdate("INSERT INTO queuewait (player_name, prio, queue_pos, start_pos_time, end_pos_time, last_server_restart) VALUES (:player_name, :prio, :queue_pos, :start_pos_time, :end_pos_time, :last_server_restart)")
                     .bind("player_name", CONFIG.authentication.username)
                     .bind("prio", CONFIG.authentication.prio)
-                    .bind("initial_queue_len", initialQueueLen)
-                    .bind("start_queue_time", initialQueueTime.atOffset(ZoneOffset.UTC))
-                    .bind("end_queue_time", endQueueTime.atOffset(ZoneOffset.UTC))
+                    .bind("queue_pos", queuePos)
+                    .bind("start_pos_time", queuePosStartTime.atOffset(ZoneOffset.UTC))
+                    .bind("end_pos_time", queuePosEndTime.atOffset(ZoneOffset.UTC))
+                    .bind("last_server_restart", lastServerRestart.atOffset(ZoneOffset.UTC))
                     .execute();
         }
     }
